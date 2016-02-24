@@ -2,7 +2,8 @@
 
 module System.Console.Args where
 
-import Data.Maybe ( catMaybes )
+import Control.Monad.State ( State(..) )
+import Data.Maybe          ( catMaybes )
 
 ----------------------------------------------------------------------- Classes
 
@@ -36,3 +37,21 @@ instance FromArgument Char where
 instance FromArgument String where
     fromArgument []  = Nothing
     fromArgument arg = Just $ catMaybes $ map (\x -> fromArgument [x]) arg
+
+------------------------------------------------------------------------- Types
+
+-- | A command line argument that can be parsed.
+data Argument = Command    String CommandInfo
+              | Positional String
+              | Optional   (Maybe Char) (Maybe String) String
+              | Flag       (Maybe Char) (Maybe String) String
+
+-- | The details related to a command.
+data CommandInfo = CommandInfo
+    { commandAction    :: Maybe (IO ())
+    , commandError     :: Maybe String
+    , commandStack     :: [String]
+    , commandArguments :: [Argument] }
+
+-- | The command-line interface monad.
+type CLI = State CommandInfo
