@@ -40,18 +40,25 @@ instance FromArgument String where
 
 ------------------------------------------------------------------------- Types
 
+-- | The command-line interface monad.
+type CLI = State CommandInfo
+
 -- | A command line argument that can be parsed.
 data Argument = Command    String CommandInfo
               | Positional String
               | Optional   (Maybe Char) (Maybe String) String
               | Flag       (Maybe Char) (Maybe String) String
 
+-- | An error that can occur while parsing a command. The Ord instance is used
+-- | to determine the priority when reporting errors.
+data Error = InvalidArgument String String
+           | MissingArgument String
+           | InvalidCommand
+           deriving (Eq, Ord)
+
 -- | The details related to a command.
 data CommandInfo = CommandInfo
     { commandAction    :: Maybe (IO ())
-    , commandError     :: Maybe String
+    , commandError     :: Maybe Error
     , commandStack     :: [String]
     , commandArguments :: [Argument] }
-
--- | The command-line interface monad.
-type CLI = State CommandInfo
