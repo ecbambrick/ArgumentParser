@@ -62,3 +62,15 @@ data CommandInfo = CommandInfo
     , commandError     :: Maybe Error
     , commandStack     :: [String]
     , commandArguments :: [Argument] }
+
+instance Show Error where
+    show InvalidCommand               = "Invalid command."
+    show (InvalidArgument name value) = "Invalid value for "  ++ format name ++ ": " ++ value
+    show (MissingArgument name)       = "No value found for " ++ format name
+
+----------------------------------------------------------------------- Utility
+
+-- | Formats the given string as an argument name.
+-- | i.e. "name" -> "<name>"
+format :: String -> String
+format x = "<" ++ x ++ ">"
