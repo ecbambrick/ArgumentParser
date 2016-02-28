@@ -60,6 +60,7 @@ data Argument = Command    String CommandInfo
 -- | to determine the priority when reporting errors.
 data Error = InvalidArgument String String
            | MissingArgument String
+           | Unrecognized    String
            | InvalidCommand
            deriving (Eq, Ord)
 
@@ -74,6 +75,7 @@ instance Show Error where
     show InvalidCommand               = "Invalid command."
     show (InvalidArgument name value) = "Invalid value for "  ++ format name ++ ": " ++ value
     show (MissingArgument name)       = "No value found for " ++ format name
+    show (Unrecognized name)          = "Unrecognized flag: " ++ name
 
 instance Show CommandInfo where
     show (CommandInfo action err stack args) =
@@ -108,13 +110,15 @@ processCommands (CommandInfo action err stack arguments)
     | isJust validChild           = Right $ fromJust validChild
     | null stack && isJust err    = Left  $ fromJust err
     | null stack && isJust action = Right $ fromJust action
+    | isJust unrecognized         = Left  $ Unrecognized (fromJust unrecognized)
     | isJust errorChild           = Left  $ fromJust errorChild
     | otherwise                   = Left  $ InvalidCommand
     where
-        commands   = filter isCommand arguments
-        children   = map (\(Command _ info) -> processCommands info) commands
-        errorChild = listToMaybe $ take 1 $ sort $ lefts children
-        validChild = listToMaybe $ rights children
+        commands     = filter isCommand arguments
+        children     = map (\(Command _ info) -> processCommands info) commands
+        unrecognized = listToMaybe $ filter (isPrefixOf "-") stack
+        errorChild   = listToMaybe $ take 1 $ sort $ lefts children
+        validChild   = listToMaybe $ rights children
 
 ---------------------------------------------------------------------- Builders
 
@@ -141,11 +145,11 @@ command name cli = do
     stack     <- State.gets commandStack
     err       <- State.gets commandError
 
-    let (match, newStack)  = popCommand name stack
-        err'               = if match then err else Just InvalidCommand
-        optionals          = filter isOptional arguments
-        initialState       = CommandInfo Nothing err' newStack optionals
-        finalState         = State.execState cli initialState
+    let (match, newStack) = popCommand name stack
+        err'              = if match then err else Just InvalidCommand
+        optionals         = filter isOptional arguments
+        initialState      = CommandInfo Nothing err' newStack optionals
+        finalState        = State.execState cli initialState
 
     addArgument (Command name finalState)
 
@@ -153,6 +157,18 @@ command name cli = do
 -- | an action as well as sub-commands.
 noCommand :: CLI () -> CLI ()
 noCommand = id
+
+-- | Gets whether or not the flag with the given name(s) exists.
+flag :: (ToName a) => a -> String -> CLI Bool
+flag name description = do
+    stack <- State.gets commandStack
+
+    let (shortName, longName) = toName name
+        (found, newStack)     = popFlag shortName longName stack
+
+    setStack newStack
+    addArgument (Flag shortName longName description)
+    return found
 
 -- Runs the given IO action if the containing command is called.
 run :: IO () -> CLI ()
@@ -169,6 +185,17 @@ popCommand name args =
         newArgs = if match then drop (length tokens) args else args
 
     in (match, newArgs)
+
+-- | Pops the flag with the either the given character or string name and
+-- | returns whether or not the pop occured along with the popped stack.
+popFlag :: Maybe Char -> Maybe String -> [String] -> (Bool, [String])
+popFlag shortName longName stack =
+    let shortName' = fmap (\x -> "-" ++ [x]) shortName
+        longName'  = fmap (\x -> "--" ++ x)  longName
+        newStack   = deleteAll longName' $ deleteAll shortName' stack
+        changed    = length stack /= length newStack
+
+    in (changed, newStack)
 
 -- | Pops the first element from the given stack and returns the value along
 -- | with the popped stack.
@@ -200,6 +227,19 @@ setStack stack = State.modify $ \state -> state { commandStack = stack }
 
 ------------------------------------------------------------------------ Utlity
 
+-- | Removes all occurences of the given value from the given list.
+deleteAll :: (Eq a) => Maybe a -> [a] -> [a]
+deleteAll Nothing  = id
+deleteAll (Just x) = recurse [] x
+    where recurse accum x []     = accum
+          recurse accum x (y:ys) =
+              if x == y then recurse (accum)        x ys
+                        else recurse (accum ++ [y]) x ys
+
+-- | Surrounds the given string with angle brackets.
+format :: String -> String
+format x = "<" ++ x ++ ">"
+
 -- | Returns whether or not the given argument is a command.
 isCommand :: Argument -> Bool
 isCommand (Command _ _) = True
@@ -213,7 +253,3 @@ isPositional _              = False
 -- | Returns whether or not the given argument is optional or a flag.
 isOptional :: Argument -> Bool
 isOptional arg = not (isCommand arg || isPositional arg)
-
--- | Surrounds the given string with angle brackets.
-format :: String -> String
-format x = "<" ++ x ++ ">"
