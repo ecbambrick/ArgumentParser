@@ -27,7 +27,7 @@ instance ToName String where
 instance ToName (Char, String) where
     toName (x, y) = (Just x, Just y)
 
--- | Class of types that can be converted from a command line argument value.
+-- | Class of types that can be converted from a command-line argument value.
 class FromArgument a where
     fromArgument :: String -> Maybe a
 
@@ -47,37 +47,37 @@ instance FromArgument String where
 ------------------------------------------------------------------------- Types
 
 -- | The command-line interface monad.
-type CLI = State CommandInfo
+type CLI a = State (CommandInfo a)
 
--- | A command line argument that can be parsed.
-data Argument = Command    String CommandInfo
-              | Positional String
-              | Optional   (Maybe Char) (Maybe String) String
-              | Flag       (Maybe Char) (Maybe String) String
-              deriving (Show)
+-- | A command-line argument that can be parsed.
+data Argument a = Command    String (CommandInfo a)
+                | Positional String
+                | Optional   (Maybe Char) (Maybe String) String
+                | Flag       (Maybe Char) (Maybe String) String
+                deriving (Show)
 
 -- | An error that can occur while parsing a command. The Ord instance is used
 -- | to determine the priority when reporting errors.
-data Error = InvalidArgument String String
-           | MissingArgument String
-           | Unrecognized    String
-           | InvalidCommand
-           deriving (Eq, Ord)
+data CLIError = InvalidArgument String String
+              | MissingArgument String
+              | Unrecognized    String
+              | InvalidCommand
+              deriving (Eq, Ord)
 
 -- | The details related to a command.
-data CommandInfo = CommandInfo
-    { commandAction    :: Maybe (IO ())
-    , commandError     :: Maybe Error
+data CommandInfo a = CommandInfo
+    { commandAction    :: Maybe a
+    , commandError     :: Maybe CLIError
     , commandStack     :: [String]
-    , commandArguments :: [Argument] }
+    , commandArguments :: [Argument a] }
 
-instance Show Error where
+instance Show CLIError where
     show InvalidCommand               = "Invalid command."
     show (InvalidArgument name value) = "Invalid value for "  ++ format name ++ ": " ++ value
     show (MissingArgument name)       = "No value found for " ++ format name
     show (Unrecognized name)          = "Unrecognized flag: " ++ name
 
-instance Show CommandInfo where
+instance Show (CommandInfo a) where
     show (CommandInfo action err stack args) =
         let actionString = if isJust action then "Just (IO ())" else "Nothing"
             contents     = intercalate "," [ "commandAction = "    ++ actionString
@@ -89,23 +89,29 @@ instance Show CommandInfo where
 
 -------------------------------------------------------------------- Intepreter
 
--- | Generate and run a command-line interface. If any errors occur, or if
--- | either -h or --help is passed in, the help screen will be shown.
-cli :: String -> CLI () -> IO ()
+-- | Evaluates a command-line interface and runs the IO action for the first
+-- | valid command. If any errors occur, or if either -h or --help is passed
+-- | in, the help screen will be shown.
+cli :: String -> CLI (IO ()) () -> IO ()
 cli description commands = do
     args <- Environment.getArgs
 
-    let initialState = CommandInfo Nothing Nothing args []
-        finalState   = State.execState commands initialState
-        result       = processCommands finalState
-
-    case result of
+    case interface description commands args of
         Left  err -> hPutStrLn stderr (show err)
         Right act -> act
 
+-- | Evaluates a pure command-line interface with the given list of arguments.
+-- | If -h or --help is passed in, they will be ignored.
+interface :: String  -> CLI a () -> [String] -> Either CLIError a
+interface description commands args =
+    let initialState = CommandInfo Nothing Nothing args []
+        finalState   = State.execState commands initialState
+
+    in processCommands finalState
+
 -- | Recursively traverse the CLI commands and return an IO action to perform
 -- | or an error if no valid action could be found.
-processCommands :: CommandInfo -> Either Error (IO ())
+processCommands :: CommandInfo a -> Either CLIError a
 processCommands (CommandInfo action err stack arguments)
     | isJust validChild           = Right $ fromJust validChild
     | null stack && isJust err    = Left  $ fromJust err
@@ -123,7 +129,7 @@ processCommands (CommandInfo action err stack arguments)
 ---------------------------------------------------------------------- Builders
 
 -- | Gets the value of the named positional argument.
-argument :: (FromArgument a) => String -> CLI a
+argument :: (FromArgument b) => String -> CLI a b
 argument name = do
     stack <- State.gets commandStack
 
@@ -139,7 +145,7 @@ argument name = do
         (Nothing,      _) -> setError (MissingArgument name)   >> return undefined
 
 -- | Creates a new command with the given name.
-command :: String -> CLI () -> CLI ()
+command :: String -> CLI a () -> CLI a ()
 command name cli = do
     arguments <- State.gets commandArguments
     stack     <- State.gets commandStack
@@ -155,11 +161,11 @@ command name cli = do
 
 -- | Equivalent to the id function. Used for readability when a command contains
 -- | an action as well as sub-commands.
-noCommand :: CLI () -> CLI ()
+noCommand :: CLI a () -> CLI a ()
 noCommand = id
 
 -- | Gets whether or not the flag with the given name(s) exists.
-flag :: (ToName a) => a -> String -> CLI Bool
+flag :: (ToName b) => b -> String -> CLI a Bool
 flag name description = do
     stack <- State.gets commandStack
 
@@ -171,7 +177,7 @@ flag name description = do
     return found
 
 -- Runs the given IO action if the containing command is called.
-run :: IO () -> CLI ()
+run :: a -> CLI a ()
 run action = State.modify $ \state -> state { commandAction = Just action }
 
 ------------------------------------------------------------ Stack manipulation
@@ -206,7 +212,7 @@ popPositional (x:xs) = (Just x, xs)
 ------------------------------------------------------------ State manipulation
 
 -- | Adds the given argument to the current command's list of arguments.
-addArgument :: Argument -> CLI ()
+addArgument :: Argument a -> CLI a ()
 addArgument arg = do
     arguments <- State.gets commandArguments
 
@@ -214,7 +220,7 @@ addArgument arg = do
 
 -- | Sets the error for the current command to the given error if it does not
 -- | already contain an error.
-setError :: Error -> CLI ()
+setError :: CLIError -> CLI a ()
 setError err = do
     hasErr <- fmap isJust (State.gets commandError)
 
@@ -222,7 +228,7 @@ setError err = do
         State.modify $ \state -> state { commandError = Just err }
 
 -- | Sets the stack for the current command to the given stack.
-setStack :: [String] -> CLI ()
+setStack :: [String] -> CLI a ()
 setStack stack = State.modify $ \state -> state { commandStack = stack }
 
 ------------------------------------------------------------------------ Utlity
@@ -241,15 +247,15 @@ format :: String -> String
 format x = "<" ++ x ++ ">"
 
 -- | Returns whether or not the given argument is a command.
-isCommand :: Argument -> Bool
+isCommand :: Argument a -> Bool
 isCommand (Command _ _) = True
 isCommand _             = False
 
 -- | Returns whether or not the given argument is positional.
-isPositional :: Argument -> Bool
+isPositional :: Argument a -> Bool
 isPositional (Positional _) = True
 isPositional _              = False
 
 -- | Returns whether or not the given argument is optional or a flag.
-isOptional :: Argument -> Bool
+isOptional :: Argument a -> Bool
 isOptional arg = not (isCommand arg || isPositional arg)
