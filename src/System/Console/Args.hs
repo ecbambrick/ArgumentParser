@@ -60,8 +60,9 @@ data Argument a = Command    String (CommandInfo a)
 -- | to determine the priority when reporting errors.
 data CLIError = InvalidArgument String String
               | MissingArgument String
-              | Unrecognized    String
               | InvalidCommand
+              | Unrecognized    String
+              | NoMatch
               deriving (Eq, Ord)
 
 -- | The details related to a command.
@@ -109,15 +110,15 @@ interface description commands args =
 
     in processCommands finalState
 
--- | Recursively traverse the CLI commands and return an IO action to perform
--- | or an error if no valid action could be found.
+-- | Recursively traverse the given command and return the result of the first
+-- | successful command or an error if no valid command could be found.
 processCommands :: CommandInfo a -> Either CLIError a
 processCommands (CommandInfo action err stack arguments)
     | isJust validChild           = Right $ fromJust validChild
     | null stack && isJust err    = Left  $ fromJust err
     | null stack && isJust action = Right $ fromJust action
-    | isJust unrecognized         = Left  $ Unrecognized (fromJust unrecognized)
     | isJust errorChild           = Left  $ fromJust errorChild
+    | isJust unrecognized         = Left  $ Unrecognized (fromJust unrecognized)
     | otherwise                   = Left  $ InvalidCommand
     where
         commands     = filter isCommand arguments
@@ -152,7 +153,7 @@ command name cli = do
     err       <- State.gets commandError
 
     let (match, newStack) = popCommand name stack
-        err'              = if match then err else Just InvalidCommand
+        err'              = if match then err else Just NoMatch
         optionals         = filter isOptional arguments
         initialState      = CommandInfo Nothing err' newStack optionals
         finalState        = State.execState cli initialState
