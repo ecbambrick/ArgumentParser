@@ -58,10 +58,10 @@ data Argument a = Command    String (CommandInfo a)
 
 -- | An error that can occur while parsing a command. The Ord instance is used
 -- | to determine the priority when reporting errors.
-data CLIError = InvalidArgument String String
-              | MissingArgument String
+data CLIError = InvalidArgument  String String
+              | MissingArgument  String
+              | UnexpectedOption String
               | InvalidCommand
-              | Unrecognized    String
               | NoMatch
               deriving (Eq, Ord)
 
@@ -76,7 +76,7 @@ instance Show CLIError where
     show InvalidCommand               = "Invalid command."
     show (InvalidArgument name value) = "Invalid value for "  ++ format name ++ ": " ++ value
     show (MissingArgument name)       = "No value found for " ++ format name
-    show (Unrecognized name)          = "Unrecognized flag: " ++ name
+    show (UnexpectedOption name)      = "Unexpected option: " ++ name
 
 instance Show (CommandInfo a) where
     show (CommandInfo action err stack args) =
@@ -118,14 +118,14 @@ processCommands (CommandInfo action err stack arguments)
     | null stack && isJust err    = Left  $ fromJust err
     | null stack && isJust action = Right $ fromJust action
     | isJust errorChild           = Left  $ fromJust errorChild
-    | isJust unrecognized         = Left  $ Unrecognized (fromJust unrecognized)
+    | isJust unexpected           = Left  $ UnexpectedOption (fromJust unexpected)
     | otherwise                   = Left  $ InvalidCommand
     where
-        commands     = filter isCommand arguments
-        children     = map (\(Command _ info) -> processCommands info) commands
-        unrecognized = listToMaybe $ filter (isPrefixOf "-") stack
-        errorChild   = listToMaybe $ take 1 $ sort $ lefts children
-        validChild   = listToMaybe $ rights children
+        commands   = filter isCommand arguments
+        children   = map (\(Command _ info) -> processCommands info) commands
+        unexpected = listToMaybe $ filter (isPrefixOf "-") stack
+        errorChild = listToMaybe $ take 1 $ sort $ lefts children
+        validChild = listToMaybe $ rights children
 
 ---------------------------------------------------------------------- Builders
 
@@ -141,9 +141,10 @@ argument name = do
     addArgument (Positional name)
 
     case (arg, parsedArg) of
+        (Just ('-':x), _) -> setError (UnexpectedOption ('-':x)) >> return undefined
         (Just _,  Just x) -> return x
-        (Just x, Nothing) -> setError (InvalidArgument name x) >> return undefined
-        (Nothing,      _) -> setError (MissingArgument name)   >> return undefined
+        (Just x, Nothing) -> setError (InvalidArgument name x)   >> return undefined
+        (Nothing,      _) -> setError (MissingArgument name)     >> return undefined
 
 -- | Creates a new command with the given name.
 command :: String -> CLI a () -> CLI a ()
