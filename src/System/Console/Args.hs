@@ -7,7 +7,7 @@ import qualified System.Environment  as Environment
 
 import Control.Monad.State ( State(..), when )
 import Data.Either         ( lefts, rights )
-import Data.List           ( intercalate, isPrefixOf, sort )
+import Data.List           ( find, intercalate, isPrefixOf, sort )
 import Data.Maybe          ( fromJust, isJust, listToMaybe )
 import System.IO           ( hPutStrLn, stderr )
 
@@ -60,15 +60,15 @@ data Argument a = Command    String (CommandInfo a)
 -- | to determine the priority when reporting errors.
 data CLIError = InvalidArgument  String String
               | MissingArgument  String
-              | UnexpectedOption String
               | InvalidCommand
-              | NoMatch
+              | UnexpectedOption String
               deriving (Eq, Ord)
 
 -- | The details related to a command.
 data CommandInfo a = CommandInfo
     { commandAction    :: Maybe a
     , commandError     :: Maybe CLIError
+    , commandIsMatch   :: Bool
     , commandStack     :: [String]
     , commandArguments :: [Argument a] }
 
@@ -79,10 +79,11 @@ instance Show CLIError where
     show (UnexpectedOption name)      = "Unexpected option: " ++ name
 
 instance Show (CommandInfo a) where
-    show (CommandInfo action err stack args) =
+    show (CommandInfo action err isMatch stack args) =
         let actionString = if isJust action then "Just (IO ())" else "Nothing"
             contents     = intercalate "," [ "commandAction = "    ++ actionString
                                            , "commandError = "     ++ show err
+                                           , "commandIsMatch = "   ++ show isMatch
                                            , "commandStack = "     ++ show stack
                                            , "commandArguments = " ++ show args ]
 
@@ -105,7 +106,7 @@ cli description commands = do
 -- | If -h or --help is passed in, they will be ignored.
 interface :: String  -> CLI a () -> [String] -> Either CLIError a
 interface description commands args =
-    let initialState = CommandInfo Nothing Nothing args []
+    let initialState = CommandInfo Nothing Nothing True args []
         finalState   = State.execState commands initialState
 
     in processCommands finalState
@@ -113,19 +114,26 @@ interface description commands args =
 -- | Recursively traverse the given command and return the result of the first
 -- | successful command or an error if no valid command could be found.
 processCommands :: CommandInfo a -> Either CLIError a
-processCommands (CommandInfo action err stack arguments)
-    | isJust validChild           = Right $ fromJust validChild
-    | null stack && isJust err    = Left  $ fromJust err
-    | null stack && isJust action = Right $ fromJust action
-    | isJust errorChild           = Left  $ fromJust errorChild
-    | isJust unexpected           = Left  $ UnexpectedOption (fromJust unexpected)
-    | otherwise                   = Left  $ InvalidCommand
-    where
-        commands   = filter isCommand arguments
-        children   = map (\(Command _ info) -> processCommands info) commands
-        unexpected = listToMaybe $ filter (isPrefixOf "-") stack
-        errorChild = listToMaybe $ take 1 $ sort $ lefts children
-        validChild = listToMaybe $ rights children
+processCommands (CommandInfo action err _ stack arguments) =
+    let thisResult = case (stack, err, action) of
+            ([], Just x, _) -> [Left x]
+            ([], _, Just x) -> [Right x]
+            _               -> []
+
+        unexpectedResults = case find (isPrefixOf "-") stack of
+            Just x  -> [Left (UnexpectedOption x)]
+            Nothing -> []
+
+        commands     = filter isMatchingCommand arguments
+        childResults = map (\(Command _ info) -> processCommands info) commands
+        allResults   = childResults ++ thisResult ++ unexpectedResults
+        success      = listToMaybe $ rights allResults
+        failure      = listToMaybe $ sort (lefts allResults)
+
+    in case (success, failure) of
+        (Just x, _) -> Right x
+        (_, Just x) -> Left x
+        _           -> Left InvalidCommand
 
 ---------------------------------------------------------------------- Builders
 
@@ -153,11 +161,10 @@ command name cli = do
     stack     <- State.gets commandStack
     err       <- State.gets commandError
 
-    let (match, newStack) = popCommand name stack
-        err'              = if match then err else Just NoMatch
-        optionals         = filter isOptional arguments
-        initialState      = CommandInfo Nothing err' newStack optionals
-        finalState        = State.execState cli initialState
+    let (isMatch, newStack) = popCommand name stack
+        optionals           = filter isOptional arguments
+        initialState        = CommandInfo Nothing err isMatch newStack optionals
+        finalState          = State.execState cli initialState
 
     addArgument (Command name finalState)
 
@@ -252,6 +259,11 @@ format x = "<" ++ x ++ ">"
 isCommand :: Argument a -> Bool
 isCommand (Command _ _) = True
 isCommand _             = False
+
+-- | Returns whether or not the given argument is a command that is a match.
+isMatchingCommand :: Argument a -> Bool
+isMatchingCommand (Command _ info) = commandIsMatch info
+isMatchingCommand _                = False
 
 -- | Returns whether or not the given argument is positional.
 isPositional :: Argument a -> Bool
