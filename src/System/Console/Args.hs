@@ -6,9 +6,10 @@ import qualified Control.Monad.State as State
 import qualified System.Environment  as Environment
 
 import Control.Monad.State ( State(..), when )
+import Data.Char           ( toLower )
 import Data.Either         ( lefts, rights )
-import Data.List           ( find, intercalate, isPrefixOf, sort )
-import Data.Maybe          ( fromJust, isJust, listToMaybe )
+import Data.List           ( find, findIndex, intercalate, isPrefixOf, sort )
+import Data.Maybe          ( fromJust, fromMaybe, isJust, listToMaybe )
 import System.IO           ( hPutStrLn, stderr )
 
 ----------------------------------------------------------------------- Classes
@@ -44,22 +45,47 @@ instance FromArgument String where
     fromArgument []  = Nothing
     fromArgument arg = Just arg
 
+instance FromArgument Bool where
+    fromArgument arg
+        | lowerArg == "true"  || lowerArg == "t" = Just True
+        | lowerArg == "false" || lowerArg == "f" = Just False
+        | otherwise                              = Nothing
+        where lowerArg = map toLower arg
+
+-- | Class of types that can be converted from a command-line option.
+class FromOption a where
+    parseOption :: Maybe String -> Maybe String -> [String] -> OptionResult a
+    hasValue    :: a -> Bool
+
+instance FromOption Bool where
+    parseOption = popFlag
+    hasValue  _ = False
+
+instance FromArgument a => FromOption (Maybe a) where
+    parseOption = popOption
+    hasValue  _ = True
+
 ------------------------------------------------------------------------- Types
 
 -- | The command-line interface monad.
 type CLI a = State (CommandInfo a)
 
+-- | The result of parsing a command-line option.
+type OptionResult a = (Maybe CLIError, a, [String])
+
 -- | A command-line argument that can be parsed.
 data Argument a = Command    String (CommandInfo a)
                 | Positional String
-                | Optional   (Maybe Char) (Maybe String) String
-                | Flag       (Maybe Char) (Maybe String) String
+                | Option     (Maybe String) (Maybe String) String
+                | Flag       (Maybe String) (Maybe String) String
                 deriving (Show)
 
 -- | An error that can occur while parsing a command. The Ord instance is used
 -- | to determine the priority when reporting errors.
 data CLIError = InvalidArgument  String String
               | MissingArgument  String
+              | InvalidOption    String String
+              | MissingValue     String
               | InvalidCommand
               | UnexpectedOption String
               deriving (Eq, Ord)
@@ -75,7 +101,9 @@ data CommandInfo a = CommandInfo
 instance Show CLIError where
     show InvalidCommand               = "Invalid command."
     show (InvalidArgument name value) = "Invalid value for "  ++ format name ++ ": " ++ value
+    show (InvalidOption name value)   = "Invalid value for "  ++ name        ++ ": " ++ value
     show (MissingArgument name)       = "No value found for " ++ format name
+    show (MissingValue name)          = "No value found for " ++ name
     show (UnexpectedOption name)      = "Unexpected option: " ++ name
 
 instance Show (CommandInfo a) where
@@ -137,7 +165,7 @@ processCommands (CommandInfo action err _ stack arguments) =
 
 ---------------------------------------------------------------------- Builders
 
--- | Gets the value of the named positional argument.
+-- | Retruns the value of the named positional argument.
 argument :: (FromArgument b) => String -> CLI a b
 argument name = do
     stack <- State.gets commandStack
@@ -173,17 +201,21 @@ command name cli = do
 noCommand :: CLI a () -> CLI a ()
 noCommand = id
 
--- | Gets whether or not the flag with the given name(s) exists.
-flag :: (ToName b) => b -> String -> CLI a Bool
-flag name description = do
+-- | Returns the maybe value of the option with the given name(s). If the
+-- | option has no value (i.e. a flag), whether or not the option exists is
+-- | returned instead.
+option :: (ToName n, FromOption b) => n -> String -> CLI a b
+option name description = do
     stack <- State.gets commandStack
 
-    let (shortName, longName) = toName name
-        (found, newStack)     = popFlag shortName longName stack
+    let (shortName, longName)   = formatNames $ toName name
+        (err, result, newStack) = parseOption shortName longName stack
+        optionType              = if hasValue result then Option else Flag
 
+    when (isJust err) $ setError (fromJust err)
+    addArgument (optionType shortName longName description)
     setStack newStack
-    addArgument (Flag shortName longName description)
-    return found
+    return result
 
 -- Runs the given IO action if the containing command is called.
 run :: a -> CLI a ()
@@ -201,16 +233,35 @@ popCommand name args =
 
     in (match, newArgs)
 
--- | Pops the flag with the either the given character or string name and
--- | returns whether or not the pop occured along with the popped stack.
-popFlag :: Maybe Char -> Maybe String -> [String] -> (Bool, [String])
+-- | Pops all flags with the either of the given names and returns whether or
+-- | not the pop occured along with the popped stack.
+popFlag :: Maybe String -> Maybe String -> [String] -> OptionResult Bool
 popFlag shortName longName stack =
-    let shortName' = fmap (\x -> "-" ++ [x]) shortName
-        longName'  = fmap (\x -> "--" ++ x)  longName
-        newStack   = deleteAll longName' $ deleteAll shortName' stack
+    let newStack   = deleteAll longName $ deleteAll shortName stack
         changed    = length stack /= length newStack
 
-    in (changed, newStack)
+    in (Nothing, changed, newStack)
+
+-- | Pops the first occurence of the option with either of the given names and
+-- | returns the popped maybe value along with the popped stack and error
+-- | details.
+popOption :: (FromArgument a) => Maybe String -> Maybe String -> [String] -> OptionResult (Maybe a)
+popOption shortName longName stack =
+    let (shortResult, shortStack) = takeWhen (== shortName) 2 stack
+        (longResult,   longStack) = takeWhen (==  longName) 2 stack
+
+    in case (shortResult, longResult) of
+        ([k,v], _) -> case fromArgument v of
+            Just  x -> (Nothing, Just x, shortStack)
+            Nothing -> (Just (InvalidOption k v), Nothing, shortStack)
+
+        (_, [k,v]) -> case fromArgument v of
+            Just  x -> (Nothing, Just x, longStack)
+            Nothing -> (Just (InvalidOption k v), Nothing, longStack)
+
+        ([k], _) -> (Just (MissingValue k), Nothing, shortStack)
+        (_, [k]) -> (Just (MissingValue k), Nothing, longStack)
+        (_,   _) -> (Nothing, Nothing, stack)
 
 -- | Pops the first element from the given stack and returns the value along
 -- | with the popped stack.
@@ -251,25 +302,37 @@ deleteAll (Just x) = recurse [] x
               if x == y then recurse (accum)        x ys
                         else recurse (accum ++ [y]) x ys
 
+-- | Returns a list of n many elements from the given list starting at the first
+-- | element that satisfies the given predicate, along with a list of the
+-- | remaining elements.
+takeWhen :: (Eq a) => (Maybe a -> Bool) -> Int -> [a] -> ([a], [a])
+takeWhen eq n xs =
+    let index  = length xs `fromMaybe` findIndex (eq . Just) xs
+        start  = take index xs
+        middle = take n $ drop index xs
+        end    = drop (index + n) xs
+
+    in (middle, start ++ end)
+
 -- | Surrounds the given string with angle brackets.
 format :: String -> String
 format x = "<" ++ x ++ ">"
 
--- | Returns whether or not the given argument is a command.
-isCommand :: Argument a -> Bool
-isCommand (Command _ _) = True
-isCommand _             = False
+-- | Formats the given argument names to include the "-" or "--".
+formatNames :: (Maybe Char, Maybe String) -> (Maybe String, Maybe String)
+formatNames (shortName, longName) =
+    let shortName' = fmap (\x -> "-" ++ [x]) shortName
+        longName'  = fmap (\x -> "--" ++ x)  longName
+
+    in (shortName', longName')
 
 -- | Returns whether or not the given argument is a command that is a match.
 isMatchingCommand :: Argument a -> Bool
 isMatchingCommand (Command _ info) = commandIsMatch info
 isMatchingCommand _                = False
 
--- | Returns whether or not the given argument is positional.
-isPositional :: Argument a -> Bool
-isPositional (Positional _) = True
-isPositional _              = False
-
--- | Returns whether or not the given argument is optional or a flag.
+-- | Returns whether or not the given argument is optional.
 isOptional :: Argument a -> Bool
-isOptional arg = not (isCommand arg || isPositional arg)
+isOptional (Option _ _ _) = True
+isOptional (Flag   _ _ _) = True
+isOptional _              = False
