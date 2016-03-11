@@ -2,10 +2,11 @@
 
 module System.Console.Args where
 
-import qualified Control.Monad.State as State
-import qualified System.Environment  as Environment
+import qualified Control.Monad.State  as State
+import qualified Control.Monad.Writer as Writer
+import qualified System.Environment   as Environment
 
-import Control.Monad.State ( State(..), when )
+import Control.Monad.State ( State, forM_, unless, when )
 import Data.Char           ( toLower )
 import Data.Either         ( lefts, rights )
 import Data.List           ( find, findIndex, intercalate, isPrefixOf, sort )
@@ -125,19 +126,25 @@ instance Show (CommandInfo a) where
 cli :: String -> CLI (IO ()) () -> IO ()
 cli description commands = do
     args <- Environment.getArgs
+    name <- Environment.getProgName
 
-    case interface description commands args of
-        Left  err -> hPutStrLn stderr (show err)
-        Right act -> act
+    case interface name description commands args of
+        Left (err, help) -> hPutStrLn stderr (show err ++ "\n\n" ++ help)
+        Right action     -> action
 
--- | Evaluates a pure command-line interface with the given list of arguments.
--- | If -h or --help is passed in, they will be ignored.
-interface :: String  -> CLI a () -> [String] -> Either CLIError a
-interface description commands args =
+-- | Evaluates a pure command-line interface with the given program name,
+-- | description, and list of arguments. If -h or --help is passed in, they
+-- | will be ignored.
+interface :: String -> String -> CLI a () -> [String] -> Either (CLIError, String) a
+interface programName description commands args =
     let initialState = CommandInfo Nothing Nothing True args []
         finalState   = State.execState commands initialState
+        help         = generateHelp programName description finalState
+        results      = processCommands finalState
 
-    in processCommands finalState
+    in case results of
+        Left  err -> Left (err, help)
+        Right act -> Right act
 
 -- | Recursively traverse the given command and return the result of the first
 -- | successful command or an error if no valid command could be found.
@@ -220,6 +227,46 @@ option name description = do
 -- Runs the given IO action if the containing command is called.
 run :: a -> CLI a ()
 run action = State.modify $ \state -> state { commandAction = Just action }
+
+--------------------------------------------------------------- Help generation
+
+-- | Returns a help document for the given command information.
+generateHelp :: String -> String -> CommandInfo a -> String
+generateHelp programName description info = unlines $ Writer.execWriter $ do
+    let helpCommand = programName ++ " --help"
+        commands    = getCommandDescriptions info programName ++ [helpCommand]
+
+    unless (null description) $ Writer.tell [description ++ "\n"]
+    Writer.tell ["Usage:"]
+    forM_ commands $ \x -> Writer.tell ["  " ++ x]
+
+-- | Returns a list of command descriptions for a help document.
+getCommandDescriptions :: CommandInfo a -> String -> [String]
+getCommandDescriptions (CommandInfo action _ _ _ arguments) path =
+    let (children, this) = flip State.execState ([], path) $ do
+            forM_ arguments $ \x -> case x of
+                Positional name   -> appendPositional name
+                Command name info -> appendSubcommand name info
+                _                 -> return ()
+
+    in if isJust action then this:children else children
+
+-- | Appends the given positional argument name to the current command
+-- | description.
+appendPositional :: String -> State ([String], String) ()
+appendPositional name =
+    State.modify $ \(commands, path) ->
+        (commands, path ++ " " ++ format name)
+
+-- | Appends a description for each subcommand of the given command to the list
+-- | of command descriptions.
+appendSubcommand :: String -> CommandInfo a -> State ([String], String) ()
+appendSubcommand name info =
+    State.modify $ \(commands, path) ->
+        let currentPath = path ++ " " ++ name
+            children    = getCommandDescriptions info currentPath
+
+        in (commands ++ children, path)
 
 ------------------------------------------------------------ Stack manipulation
 
@@ -326,6 +373,11 @@ formatNames (shortName, longName) =
 
     in (shortName', longName')
 
+-- | Returns whether or not the given argument is a command.
+isCommand :: Argument a -> Bool
+isCommand (Command _ _) = True
+isCommand _             = False
+
 -- | Returns whether or not the given argument is a command that is a match.
 isMatchingCommand :: Argument a -> Bool
 isMatchingCommand (Command _ info) = commandIsMatch info
@@ -336,3 +388,8 @@ isOptional :: Argument a -> Bool
 isOptional (Option _ _ _) = True
 isOptional (Flag   _ _ _) = True
 isOptional _              = False
+
+-- | Returns whether or not the given argument is positional.
+isPositional :: Argument a -> Bool
+isPositional (Positional _) = True
+isPositional _              = False

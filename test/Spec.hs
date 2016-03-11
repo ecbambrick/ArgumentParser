@@ -53,36 +53,38 @@ main = hspec $ do
     describe "System.Console.Args.pureInterface (option [-x=><value>])" $ do
         testTodo "option                 " $ Right ("option [--flag=<value>]", ["Nothing"])
         testTodo "option -x              " $ Left  (UnexpectedOption "-x")
-        testTodo "option -x y            " $ Left  (UnexpectedOption "-x")
+        testTodo "option -x 1            " $ Left  (UnexpectedOption "-x")
         testTodo "option -f              " $ Left  (MissingValue "-f")
-        testTodo "option -f x            " $ Right ("option [--flag=<value>]", ["Just \"x\""])
+        testTodo "option -f 1            " $ Right ("option [--flag=<value>]", ["Just 1"])
         testTodo "option --flag          " $ Left  (MissingValue "--flag")
-        testTodo "option --flag x        " $ Right ("option [--flag=<value>]", ["Just \"x\""])
+        testTodo "option --flag 1        " $ Right ("option [--flag=<value>]", ["Just 1"])
+        testTodo "option -f x            " $ Left  (InvalidOption "-f" "x")
+        testTodo "option --flag x        " $ Left  (InvalidOption "--flag" "x")
         testTodo "option --f             " $ Left  (UnexpectedOption "--f")
-        testTodo "option --f x           " $ Left  (UnexpectedOption "--f")
+        testTodo "option --f 1           " $ Left  (UnexpectedOption "--f")
         testTodo "option -flag           " $ Left  (UnexpectedOption "-flag")
-        testTodo "option -flag x         " $ Left  (UnexpectedOption "-flag")
-        testTodo "option -f x -f         " $ Left  (UnexpectedOption "-f")
-        testTodo "option --flag x -f     " $ Left  (UnexpectedOption "-f")
-        testTodo "option -f x --flag     " $ Left  (UnexpectedOption "--flag")
-        testTodo "option --flag x --flag " $ Left  (UnexpectedOption "--flag")
+        testTodo "option -flag 1         " $ Left  (UnexpectedOption "-flag")
+        testTodo "option -f 1 -f         " $ Left  (UnexpectedOption "-f")
+        testTodo "option --flag 1 -f     " $ Left  (UnexpectedOption "-f")
+        testTodo "option -f 1 --flag     " $ Left  (UnexpectedOption "--flag")
+        testTodo "option --flag 1 --flag " $ Left  (UnexpectedOption "--flag")
 
 -- | Tests the todo interface with the given input and compares its output with the
 -- | given output.
 testTodo :: String -> Either CLIError (String, [String]) -> Spec
-testTodo input (Left  output) = it (input ++ " -> " ++ show output) $ todoInterface (words input) `shouldBe` (Left output)
+testTodo input (Left  output) = it (input ++ " -> " ++ show output) $ todoInterface (words input) `shouldBe` (Left (output, todoHelp))
 testTodo input (Right output) = it (input ++ " -> " ++ show output) $ todoInterface (words input) `shouldBe` (Right output)
 
 -- | A simple todo interface.
-todoInterface :: [String] -> Either CLIError (String, [String])
-todoInterface = interface "A simple todo application." $ do
+todoInterface :: [String] -> Either (CLIError, String) (String, [String])
+todoInterface = interface "todo" "A simple todo application." $ do
     command "add text" $ do
         text1 <- argument "text1"
         text2 <- argument "text2"
         run ("add text <text1> <text2>", [text1, text2])
 
     command "option" $ do
-        x <- option ('f', "flag") "something" :: TestInterface (Maybe String)
+        x <- option ('f', "flag") "something" :: TestInterface (Maybe Int)
         run ("option [--flag=<value>]", [show x])
 
     command "mark" $ do
@@ -116,3 +118,19 @@ todoInterface = interface "A simple todo application." $ do
         a <- argument "a"
         b <- argument "b"
         run ("<a> <b>", [a, b])
+
+-- | The expected help document for the todo interface.
+todoHelp :: String
+todoHelp = unlines
+    [ "A simple todo application."
+    , ""
+    , "Usage:"
+    , "  todo <a> <b>"
+    , "  todo add text <text1> <text2>"
+    , "  todo option"
+    , "  todo mark <id> complete"
+    , "  todo mark <id> incomplete"
+    , "  todo list"
+    , "  todo export <id> to <file>"
+    , "  todo deep <a> command <b> test <c>"
+    , "  todo --help" ]
