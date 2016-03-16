@@ -127,10 +127,14 @@ todoHelp = unlines
     , "Usage:"
     , "  todo <a> <b>"
     , "  todo add text <text1> <text2>"
-    , "  todo option"
-    , "  todo mark <id> complete"
-    , "  todo mark <id> incomplete"
+    , "  todo option --flag=<VALUE>"
+    , "  todo mark <id> complete --flag"
+    , "  todo mark <id> incomplete --flag"
     , "  todo list"
     , "  todo export <id> to <file>"
     , "  todo deep <a> command <b> test <c>"
-    , "  todo --help" ]
+    , "  todo --help"
+    , ""
+    , "Options:"
+    , "  -f=<VALUE> --flag=<VALUE>  something"
+    , "  -f --flag                  Some flag" ]

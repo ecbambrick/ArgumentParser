@@ -6,10 +6,12 @@ import qualified Control.Monad.State  as State
 import qualified Control.Monad.Writer as Writer
 import qualified System.Environment   as Environment
 
+import Control.Applicative ( (<|>) )
 import Control.Monad.State ( State, forM_, unless, when )
 import Data.Char           ( toLower )
 import Data.Either         ( lefts, rights )
-import Data.List           ( find, findIndex, intercalate, isPrefixOf, sort )
+import Data.List           ( find, findIndex, intercalate, isPrefixOf, nub
+                           , sort )
 import Data.Maybe          ( fromJust, fromMaybe, isJust, listToMaybe )
 import System.IO           ( hPutStrLn, stderr )
 
@@ -235,12 +237,20 @@ generateHelp :: String -> String -> CommandInfo a -> String
 generateHelp programName description info = unlines $ Writer.execWriter $ do
     let helpCommand = programName ++ " --help"
         commands    = getCommandDescriptions info programName ++ [helpCommand]
+        options     = getOptionDescriptions info
 
-    unless (null description) $ Writer.tell [description ++ "\n"]
+    unless (null description) $ do
+        Writer.tell [description ++ "\n"]
+
     Writer.tell ["Usage:"]
     forM_ commands $ \x -> Writer.tell ["  " ++ x]
 
--- | Returns a list of command descriptions for a help document.
+    unless (null options) $ do
+        Writer.tell ["\nOptions:"]
+        forM_ options $ \x -> Writer.tell ["  " ++ x]
+
+-- | Returns a list of command descriptions for the given command and its
+-- | sub-commands.
 getCommandDescriptions :: CommandInfo a -> String -> [String]
 getCommandDescriptions (CommandInfo action _ _ _ arguments) path =
     let (children, this) = flip State.execState ([], path) $ do
@@ -249,7 +259,63 @@ getCommandDescriptions (CommandInfo action _ _ _ arguments) path =
                 Command name info -> appendSubcommand name info
                 _                 -> return ()
 
-    in if isJust action then this:children else children
+            forM_ arguments $ \x -> case x of
+                Option shortName longName _ -> appendOption shortName longName
+                Flag   shortName longName _ -> appendFlag   shortName longName
+                _                           -> return ()
+
+    in if isJust action
+        then this:children
+        else children
+
+-- | Returns a list of option descriptions for the given command and its
+-- | sub-commands.
+getOptionDescriptions :: CommandInfo a -> [String]
+getOptionDescriptions info =
+    let options         = getOptionDetails info
+        maxLength       = maximum $ map (length . fst) options
+        toString (x, y) = padRight (maxLength + 2) x ++ y
+
+    in nub $ map toString options
+
+-- | Returns a list of option name-description pairs for the given command and
+-- | its sub-commands.
+getOptionDetails :: CommandInfo a -> [(String, String)]
+getOptionDetails (CommandInfo action _ _ _ arguments) =
+    let options      = filter isOptional arguments
+        commands     = filter isCommand arguments
+        commandInfos = map (\(Command _ info) -> info) commands
+        children     = concatMap getOptionDetails commandInfos
+        results      = map getNameAndDescription options
+
+    in results ++ children
+
+-- | Converts the given optional argument to a formatted name-description pair.
+getNameAndDescription :: Argument a -> (String, String)
+getNameAndDescription option =
+    let withVal = fmap (++ "=<VALUE>")
+        (short, long, desc) = case option of
+            Option short long desc -> (withVal short, withVal long, desc)
+            Flag   short long desc -> (short, long, desc)
+
+    in case (short, long) of
+        (Just x,  Just y) -> (x ++ " " ++ y, desc)
+        (Nothing, Just y) -> (y, desc)
+        (Just x, Nothing) -> (x, desc)
+
+-- | Appends the given flag argument names to the current command description.
+appendFlag :: Maybe String -> Maybe String -> State ([String], String) ()
+appendFlag shortName longName =
+    State.modify $ \(commands, path) ->
+        let preferredName = fromJust (longName <|> shortName)
+        in (commands, path ++ " " ++ preferredName)
+
+-- | Appends the given option argument names to the current command description.
+appendOption :: Maybe String -> Maybe String -> State ([String], String) ()
+appendOption shortName longName =
+    State.modify $ \(commands, path) ->
+        let preferredName = fromJust (longName <|> shortName)
+        in (commands, path ++ " " ++ preferredName ++ "=<VALUE>")
 
 -- | Appends the given positional argument name to the current command
 -- | description.
@@ -349,18 +415,6 @@ deleteAll (Just x) = recurse [] x
               if x == y then recurse (accum)        x ys
                         else recurse (accum ++ [y]) x ys
 
--- | Returns a list of n many elements from the given list starting at the first
--- | element that satisfies the given predicate, along with a list of the
--- | remaining elements.
-takeWhen :: (Eq a) => (Maybe a -> Bool) -> Int -> [a] -> ([a], [a])
-takeWhen eq n xs =
-    let index  = length xs `fromMaybe` findIndex (eq . Just) xs
-        start  = take index xs
-        middle = take n $ drop index xs
-        end    = drop (index + n) xs
-
-    in (middle, start ++ end)
-
 -- | Surrounds the given string with angle brackets.
 format :: String -> String
 format x = "<" ++ x ++ ">"
@@ -393,3 +447,20 @@ isOptional _              = False
 isPositional :: Argument a -> Bool
 isPositional (Positional _) = True
 isPositional _              = False
+
+-- | Pad the right side of the given string with spaces until its length is
+-- | equal to the given amount.
+padRight :: Int -> String -> String
+padRight n x = x ++ replicate (n - length x) ' '
+
+-- | Returns a list of n many elements from the given list starting at the first
+-- | element that satisfies the given predicate, along with a list of the
+-- | remaining elements.
+takeWhen :: (Eq a) => (Maybe a -> Bool) -> Int -> [a] -> ([a], [a])
+takeWhen eq n xs =
+    let index  = length xs `fromMaybe` findIndex (eq . Just) xs
+        start  = take index xs
+        middle = take n $ drop index xs
+        end    = drop (index + n) xs
+
+    in (middle, start ++ end)
