@@ -1,0 +1,33 @@
+name:                ArgumentParser
+version:             0.1.0.0
+synopsis:            Monadic command-line argument parser.
+homepage:            https://github.com/ecbambrick/ArgumentParser
+author:              Cole Bambrick
+maintainer:          cole.bambrick@gmail.com
+copyright:           (c) 2016 Cole Bambrick
+category:            Console
+build-type:          Simple
+cabal-version:       >= 1.10
+
+source-repository head
+    type:     git
+    location: https://github.com/ecbambrick/ArgumentParser
+
+library
+    hs-source-dirs:      src
+    default-language:    Haskell2010
+    exposed-modules:     System.Console.Args
+    build-depends:
+        base >= 4.7 && < 5,
+        mtl
+
+test-suite ArgumentParser-test
+    hs-source-dirs:      test
+    main-is:             Spec.hs
+    default-language:    Haskell2010
+    type:                exitcode-stdio-1.0
+    ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+    build-depends:
+        ArgumentParser,
+        base,
+        hspec
